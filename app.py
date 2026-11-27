@@ -1,4 +1,4 @@
-"""Stateless PDF Merger: Flask + Neon (Postgres & S3) + Layerbase (Redis-compatible).
+"""Stateless otter-merge: Flask + Neon (Postgres & S3) + Layerbase (Redis-compatible).
 
 No local disk writes. All PDF work happens in memory (io.BytesIO + pypdf),
 binaries live in Neon S3-compatible object storage, metadata lives in Neon
@@ -71,7 +71,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BYTES
 # Structured logging (JSON to stdout -> Vercel Logs)
 # --------------------------------------------------------------------------
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(message)s")
-log = logging.getLogger("pdf-merger")
+log = logging.getLogger("otter-merge")
 
 
 def emit(**fields):
