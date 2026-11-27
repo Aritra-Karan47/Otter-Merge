@@ -4,6 +4,7 @@ No local disk writes. All PDF work happens in memory (io.BytesIO + pypdf),
 binaries live in Neon S3-compatible object storage, metadata lives in Neon
 Postgres, and caching/rate-limiting/tokens live in Layerbase Redis.
 """
+
 import hashlib
 import hmac
 import io
@@ -44,18 +45,18 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 AWS_REGION = os.environ.get("AWS_REGION", "")
 AWS_BUCKET = os.environ.get("AWS_BUCKET", "")
 
-MAX_UPLOAD_BYTES = 4 * 1024 * 1024          # per-file cap (Vercel body limit is 4.5MB)
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024  # per-file cap (Vercel body limit is 4.5MB)
 MAX_REQUEST_BYTES = int(4.4 * 1024 * 1024)  # hard cap incl. multipart overhead
 MAX_FILES_PER_MERGE = 10
 MAX_MERGE_TOTAL_BYTES = 25 * 1024 * 1024
 MIN_FILES_PER_MERGE = 2
 
-UPLOAD_TTL_SECONDS = 60 * 60                # staged uploads live 1 hour
-MERGED_TTL_SECONDS = 60 * 60                # merged files live 1 hour
-CACHE_TTL_SECONDS = 15 * 60                 # Layerbase merge cache + download token
-PRESIGNED_URL_TTL_SECONDS = 5 * 60          # S3 presigned download URL lifetime
+UPLOAD_TTL_SECONDS = 60 * 60  # staged uploads live 1 hour
+MERGED_TTL_SECONDS = 60 * 60  # merged files live 1 hour
+CACHE_TTL_SECONDS = 15 * 60  # Layerbase merge cache + download token
+PRESIGNED_URL_TTL_SECONDS = 5 * 60  # S3 presigned download URL lifetime
 
-RATE_LIMITS = {                             # (max requests, window seconds) per IP
+RATE_LIMITS = {  # (max requests, window seconds) per IP
     "upload": (30, 60),
     "merge": (10, 60),
     "download": (30, 60),
@@ -176,7 +177,9 @@ def run_cleanup():
         s3_delete_keys([r[1] for r in up_rows] + [r[1] for r in mg_rows])
         a = 0
         if up_rows:
-            a = conn.execute("DELETE FROM uploaded_files WHERE id = ANY(%s::uuid[])", ([r[0] for r in up_rows],)).rowcount
+            a = conn.execute(
+                "DELETE FROM uploaded_files WHERE id = ANY(%s::uuid[])", ([r[0] for r in up_rows],)
+            ).rowcount
         b = 0
         if mg_rows:
             b = conn.execute("DELETE FROM merged_files WHERE id = ANY(%s::uuid[])", ([r[0] for r in mg_rows],)).rowcount
@@ -244,7 +247,7 @@ def s3_delete_keys(keys):
         return
     client = s3()
     for i in range(0, len(unique_keys), 1000):
-        batch = [{"Key": k} for k in unique_keys[i:i + 1000]]
+        batch = [{"Key": k} for k in unique_keys[i : i + 1000]]
         client.delete_objects(Bucket=AWS_BUCKET, Delete={"Objects": batch, "Quiet": True})
 
 
@@ -274,15 +277,23 @@ def cache():
         if not LAYERBASE_URL:
             raise ApiError(503, "LAYERBASE_URL is not configured.")
         _redis = redis.from_url(
-            LAYERBASE_URL, decode_responses=True,
-            socket_connect_timeout=3, socket_timeout=3, health_check_interval=30,
+            LAYERBASE_URL,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+            health_check_interval=30,
         )
     return _redis
 
 
 def client_ip():
     xff = request.headers.get("x-forwarded-for", "")
-    return (xff.split(",")[0].strip() if xff else None) or request.headers.get("x-real-ip") or request.remote_addr or "unknown"
+    return (
+        (xff.split(",")[0].strip() if xff else None)
+        or request.headers.get("x-real-ip")
+        or request.remote_addr
+        or "unknown"
+    )
 
 
 def rate_limit(bucket):
@@ -423,8 +434,15 @@ def merge():
                 info["token"] = token
                 r.setex(cache_key, CACHE_TTL_SECONDS, json.dumps(info))
             g.cache_hit = True
-            return jsonify({"download_token": token, "download_url": download_url(token),
-                            "pages": info.get("pages"), "cached": True, "expires_in": CACHE_TTL_SECONDS})
+            return jsonify(
+                {
+                    "download_token": token,
+                    "download_url": download_url(token),
+                    "pages": info.get("pages"),
+                    "cached": True,
+                    "expires_in": CACHE_TTL_SECONDS,
+                }
+            )
         except (ValueError, KeyError):
             r.delete(cache_key)
 
@@ -444,7 +462,8 @@ def merge():
         else:
             # Validate presence & total size before downloading blobs from S3
             meta = conn.execute(
-                "SELECT id::text, file_size, s3_key FROM uploaded_files WHERE id = ANY(%s::uuid[]) AND expires_at > NOW()",
+                "SELECT id::text, file_size, s3_key FROM uploaded_files "
+                "WHERE id = ANY(%s::uuid[]) AND expires_at > NOW()",
                 (list(set(ids)),),
             ).fetchall()
             sizes = {m[0]: m[1] for m in meta}
@@ -494,30 +513,48 @@ def merge():
                     try:
                         s3_delete_keys([expired[0]])
                     except Exception as cleanup_err:
-                        emit(request_id=g.request_id, level="warn", msg="expired s3 cleanup failed", error=repr(cleanup_err))
+                        emit(
+                            request_id=g.request_id,
+                            level="warn",
+                            msg="expired s3 cleanup failed",
+                            error=repr(cleanup_err),
+                        )
                 ins = conn.execute(
                     """INSERT INTO merged_files (id, source_hash, filename, file_size, page_count, s3_key, expires_at)
                        VALUES (%s, %s, %s, %s, %s, %s, NOW() + make_interval(secs => %s))
                        ON CONFLICT (source_hash) DO NOTHING RETURNING id""",
-                    (merged_id, source_hash, merged_filename,
-                     len(merged), pages, merged_key, MERGED_TTL_SECONDS),
+                    (merged_id, source_hash, merged_filename, len(merged), pages, merged_key, MERGED_TTL_SECONDS),
                 ).fetchone()
                 if ins is None:  # concurrent request won the race
-                    won = conn.execute("SELECT id, page_count FROM merged_files WHERE source_hash=%s", (source_hash,)).fetchone()
+                    won = conn.execute(
+                        "SELECT id, page_count FROM merged_files WHERE source_hash=%s", (source_hash,)
+                    ).fetchone()
                     merged_id, pages = str(won[0]), won[1]
                     s3_delete_keys([merged_key])
         except Exception:
             try:
                 s3_delete_keys([merged_key])
             except Exception as cleanup_err:
-                emit(request_id=g.request_id, level="warn", msg="orphan merged s3 cleanup failed", error=repr(cleanup_err))
+                emit(
+                    request_id=g.request_id,
+                    level="warn",
+                    msg="orphan merged s3 cleanup failed",
+                    error=repr(cleanup_err),
+                )
             raise
 
     token = new_download_token(merged_id)
     r.setex(cache_key, CACHE_TTL_SECONDS, json.dumps({"merged_file_id": merged_id, "token": token, "pages": pages}))
     maybe_cleanup()
-    return jsonify({"download_token": token, "download_url": download_url(token),
-                    "pages": pages, "cached": False, "expires_in": CACHE_TTL_SECONDS})
+    return jsonify(
+        {
+            "download_token": token,
+            "download_url": download_url(token),
+            "pages": pages,
+            "cached": False,
+            "expires_in": CACHE_TTL_SECONDS,
+        }
+    )
 
 
 @app.get("/api/download/<token>")
