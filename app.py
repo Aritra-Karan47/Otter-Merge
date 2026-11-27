@@ -345,7 +345,7 @@ def download_url(token):
 # --------------------------------------------------------------------------
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", upload_ttl=UPLOAD_TTL_SECONDS)
 
 
 @app.get("/healthz")
@@ -391,7 +391,7 @@ def upload():
         raise
     g.file_count = 1
     maybe_cleanup()
-    return jsonify({"file_id": file_id, "filename": filename, "pages": pages}), 201
+    return jsonify({"file_id": file_id, "filename": filename, "pages": pages, "expires_in": UPLOAD_TTL_SECONDS}), 201
 
 
 @app.post("/api/merge")

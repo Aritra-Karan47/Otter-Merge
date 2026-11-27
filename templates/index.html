@@ -26,11 +26,18 @@
     .item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
     .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .item .meta { display: block; font-size: .8rem; color: var(--muted); }
-    .item.error .meta { color: var(--bad); }
+    .item.error .meta, .item.expired .meta { color: var(--bad); }
+    .item.expired { border-color: rgba(255, 123, 114, 0.55); }
     .item.done .meta { color: var(--ok); }
-    .item button { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; font-size: 1rem; }
-    .item button:hover:not(:disabled) { border-color: var(--accent); background: var(--tint); }
+    .item button { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; font-size: 1rem; flex-shrink: 0; }
+    .item button.reupload { width: auto; padding: 0 10px; font-size: .85rem; font-weight: 600; border-color: rgba(255, 123, 114, 0.6); color: var(--bad); }
+    .item button:hover:not(:disabled) { border-color: var(--accent); background: var(--tint); color: var(--ink); }
     .item button:disabled { opacity: .35; cursor: default; }
+    .prompt { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 12px; background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.45); border-radius: 10px; font-size: .9rem; }
+    .prompt[hidden] { display: none; }
+    .prompt button { padding: 6px 12px; border: 1px solid rgba(255, 123, 114, 0.6); border-radius: 8px; background: transparent; color: var(--bad); font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .prompt button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); background: var(--tint); }
+    .prompt button:disabled { opacity: .45; cursor: not-allowed; }
     .empty { color: var(--muted); text-align: center; margin: 16px 0 0; }
     .actions { display: flex; gap: 10px; margin-top: 20px; }
     #merge, .download { padding: 10px 20px; border: 0; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; transition: background-color .15s; }
@@ -63,62 +70,167 @@
 
     <ul id="list" class="list" aria-live="polite"></ul>
     <p id="empty" class="empty">No files yet. Choose PDFs to get started.</p>
+    <div id="expired-prompt" class="prompt" role="alert" hidden>
+      <span id="expired-msg"></span>
+      <button id="reupload-all" type="button">Re-upload expired</button>
+    </div>
 
     <div class="actions">
       <button id="merge" type="button" disabled>Merge PDFs</button>
       <button id="clear" type="button" class="ghost" disabled>Clear all</button>
     </div>
 
-    <p id="status" class="status" role="status"></p>
+    <p id="status" class="status" role="status"><span id="status-text"></span><span id="countdown" aria-live="off"></span></p>
     <a id="download" class="download" hidden>Download merged PDF</a>
   </main>
   <script>
     (() => {
       const MAX_FILES = 10, MAX_BYTES = 4 * 1024 * 1024;
+      const UPLOAD_TTL_MS = ({{ upload_ttl|default(3600)|tojson }}) * 1000;
       const $ = (id) => document.getElementById(id);
       const picker = $("picker"), list = $("list"), empty = $("empty"),
             mergeBtn = $("merge"), clearBtn = $("clear"), statusEl = $("status"),
-            dl = $("download"), drop = $("drop");
+            statusText = $("status-text"), countdownEl = $("countdown"),
+            expiredPrompt = $("expired-prompt"), expiredMsg = $("expired-msg"),
+            reuploadAllBtn = $("reupload-all"), dl = $("download"), drop = $("drop");
 
-      let items = []; // {file, state: queued|uploading|done|error, id, pages, error}
+      let items = []; // {file, state: queued|uploading|done|error|expired, id, pages, error, uploadedAt, expiresAt}
       let uploading = false, merging = false, currentController = null;
+      let downloadExpiresAt = null, ttlTimer = null;
 
       const fmt = (n) => (n < 1024 * 1024 ? (n / 1024).toFixed(0) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB");
-      const setStatus = (msg, err = false) => { statusEl.textContent = msg; statusEl.classList.toggle("error", err); };
-      const resetResult = () => { dl.hidden = true; dl.removeAttribute("href"); };
+      const fmtClock = (ms) => {
+        const s = Math.max(0, Math.ceil(ms / 1000));
+        return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+      };
+      const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const fmtItemMeta = (it, now = Date.now()) => {
+        if (it.state === "done") {
+          const leftMin = Math.max(1, Math.ceil((it.expiresAt - now) / 60000));
+          return `${it.pages} page${it.pages === 1 ? "" : "s"} · ${fmt(it.file.size)} · uploaded ${fmtTime(it.uploadedAt)} (${leftMin}m left)`;
+        }
+        if (it.state === "expired") return `Expired after 1 hour (uploaded ${fmtTime(it.uploadedAt)}) · Re-upload to include`;
+        if (it.state === "uploading") return "Uploading…";
+        if (it.state === "queued") return "Waiting…";
+        return it.error;
+      };
+      const setStatus = (msg, err = false, countdown = "") => {
+        statusText.textContent = msg;
+        countdownEl.textContent = countdown;
+        statusEl.classList.toggle("error", err);
+      };
+      const resetResult = () => {
+        downloadExpiresAt = null;
+        dl.hidden = true;
+        dl.removeAttribute("href");
+        delete dl.dataset.expired;
+        countdownEl.textContent = "";
+      };
+
+      function syncTimer() {
+        const active = downloadExpiresAt !== null || items.some((x) => x.state === "done" && x.expiresAt);
+        if (active && !ttlTimer) ttlTimer = setInterval(checkExpirations, 1000);
+        else if (!active && ttlTimer) { clearInterval(ttlTimer); ttlTimer = null; }
+      }
+
+      function checkExpirations() {
+        const now = Date.now();
+        let itemExpired = false;
+        for (const it of items) {
+          if (it.state === "done" && it.expiresAt && now >= it.expiresAt) {
+            it.state = "expired";
+            it.id = null;
+            itemExpired = true;
+          } else if (it.state === "done" && it._metaEl) {
+            const nextMeta = fmtItemMeta(it, now);
+            if (it._metaEl.textContent !== nextMeta) it._metaEl.textContent = nextMeta;
+          }
+        }
+        if (downloadExpiresAt !== null) {
+          const left = downloadExpiresAt - now;
+          if (left <= 0) {
+            downloadExpiresAt = null;
+            dl.hidden = true;
+            dl.removeAttribute("href");
+            dl.dataset.expired = "true";
+            const hasExpiredItems = items.some((x) => x.state === "expired");
+            setStatus(
+              hasExpiredItems
+                ? "Download link expired. Re-upload expired files and merge again."
+                : "Download link expired. Click Merge PDFs to generate a new link.",
+              true
+            );
+          } else {
+            countdownEl.textContent = ` (${fmtClock(left)} left)`;
+          }
+        }
+        if (itemExpired) render();
+        syncTimer();
+      }
+
+      function requeueItems(targets) {
+        let changed = false;
+        for (const it of targets) {
+          if (it && it.state === "expired") {
+            it.state = "queued";
+            it.id = null;
+            it.error = null;
+            it.uploadedAt = null;
+            it.expiresAt = null;
+            changed = true;
+          }
+        }
+        if (!changed) return;
+        resetResult();
+        setStatus("");
+        render();
+        uploadQueue();
+      }
 
       function render() {
+        const now = Date.now();
         list.textContent = "";
         items.forEach((it, i) => {
           const li = document.createElement("li");
-          li.className = "item " + (it.state === "error" ? "error" : it.state === "done" ? "done" : "");
+          li.className = "item " + (it.state === "error" ? "error" : it.state === "expired" ? "expired" : it.state === "done" ? "done" : "");
           const text = document.createElement("div");
           text.className = "name";
           text.textContent = it.file.name;
           const meta = document.createElement("span");
           meta.className = "meta";
-          meta.textContent = it.state === "done" ? `${it.pages} page${it.pages === 1 ? "" : "s"} · ${fmt(it.file.size)}`
-            : it.state === "uploading" ? "Uploading…"
-            : it.state === "queued" ? "Waiting…"
-            : it.error;
+          meta.textContent = fmtItemMeta(it, now);
+          it._metaEl = meta;
           text.appendChild(meta);
           li.appendChild(text);
 
-          const mk = (label, aria, onClick, disabled) => {
+          const mk = (label, aria, onClick, disabled, cls = "") => {
             const b = document.createElement("button");
             b.type = "button"; b.textContent = label; b.setAttribute("aria-label", aria);
+            if (cls) b.className = cls;
             b.disabled = disabled || merging; b.addEventListener("click", onClick);
             return b;
           };
+          if (it.state === "expired") {
+            li.appendChild(mk("Re-upload", `Re-upload ${it.file.name}`, () => requeueItems([it]), false, "reupload"));
+          }
           li.appendChild(mk("↑", `Move ${it.file.name} up`, () => move(i, -1), i === 0));
           li.appendChild(mk("↓", `Move ${it.file.name} down`, () => move(i, 1), i === items.length - 1));
           li.appendChild(mk("✕", `Remove ${it.file.name}`, () => removeItem(i), false));
           list.appendChild(li);
         });
         const ready = items.filter((x) => x.state === "done").length;
+        const expiredCount = items.filter((x) => x.state === "expired").length;
         empty.hidden = items.length > 0;
+        expiredPrompt.hidden = expiredCount === 0;
+        if (expiredCount > 0) {
+          expiredMsg.textContent = expiredCount === 1
+            ? "1 uploaded file expired after 1 hour."
+            : `${expiredCount} uploaded files expired after 1 hour.`;
+        }
+        reuploadAllBtn.disabled = merging || expiredCount === 0;
         mergeBtn.disabled = merging || uploading || ready < 2;
         clearBtn.disabled = merging || items.length === 0;
+        syncTimer();
       }
 
       function move(i, d) {
@@ -161,8 +273,11 @@
               });
               if (!res.ok) throw new Error(await readError(res));
               const data = await res.json();
+              const ttlMs = Number(data.expires_in) > 0 ? Number(data.expires_in) * 1000 : UPLOAD_TTL_MS;
               it.id = data.file_id;
               it.pages = data.pages;
+              it.uploadedAt = Date.now();
+              it.expiresAt = it.uploadedAt + ttlMs;
               it.state = "done";
             } catch (e) {
               if (e.name !== "AbortError") {
@@ -197,6 +312,7 @@
       ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
       ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
       drop.addEventListener("drop", (e) => addFiles(Array.from(e.dataTransfer.files)));
+      reuploadAllBtn.addEventListener("click", () => requeueItems(items));
 
       clearBtn.addEventListener("click", () => {
         items = [];
@@ -205,8 +321,13 @@
       });
 
       mergeBtn.addEventListener("click", async () => {
-        // Files that failed to upload are skipped; the rest merge in list order.
+        checkExpirations();
+        // Files that failed or expired are skipped; the rest merge in list order.
         const ids = items.filter((x) => x.state === "done").map((x) => x.id);
+        if (ids.length < 2) {
+          setStatus("At least 2 non-expired PDFs are required to merge.", true);
+          return;
+        }
         merging = true; resetResult(); setStatus("Merging…"); render();
         try {
           const res = await fetch("/api/merge", {
@@ -215,14 +336,24 @@
           });
           if (!res.ok) throw new Error(await readError(res));
           const data = await res.json();
-          dl.href = data.download_url; dl.hidden = false;
-          setStatus(`Merged ${data.pages ?? ""} pages. This link expires in ${Math.round(data.expires_in / 60)} minutes.`);
+          const ttlMs = (Number(data.expires_in) > 0 ? Number(data.expires_in) : 900) * 1000;
+          downloadExpiresAt = Date.now() + ttlMs;
+          dl.href = data.download_url; dl.hidden = false; delete dl.dataset.expired;
+          setStatus(
+            `Merged ${data.pages ?? ""} pages. This link expires in ${Math.round(ttlMs / 60000)} minutes.`,
+            false,
+            ` (${fmtClock(ttlMs)} left)`
+          );
+          syncTimer();
         } catch (e) {
           setStatus(e.message || "Merge failed.", true);
         } finally {
           merging = false; render();
         }
       });
+
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) checkExpirations(); });
+      window.addEventListener("focus", checkExpirations);
 
       render();
     })();
