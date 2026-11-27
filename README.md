@@ -9,8 +9,6 @@
 ├── .env.example
 ├── templates/index.html
 └── static/
-    ├── style.css
-    ├── app.js
     └── logo/logo.png      <- replace with your logo
 ```
 
