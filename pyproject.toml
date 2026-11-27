@@ -10,4 +10,5 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "integration: tests requiring live Postgres, Redis, and S3-compatible services",
+    "browser: Playwright browser tests for frontend UI flows",
 ]
