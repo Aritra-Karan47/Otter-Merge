@@ -1,4 +1,4 @@
-# otter-merge (Flask + Neon + Layerbase on Vercel)
+# otter-merge
 
 ```
 .
