@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Merger</title>
+  <link rel="icon" href="{{ url_for('static', filename='logo/logo.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="wrap">
+    <header class="head">
+      <img class="logo" src="{{ url_for('static', filename='logo/logo.png') }}" alt="Logo" onerror="this.style.display='none'">
+      <div>
+        <h1>PDF Merger</h1>
+        <p class="sub">Add PDFs, set the order, and download one file.</p>
+      </div>
+    </header>
+
+    <label class="drop" id="drop" for="picker">
+      <input id="picker" type="file" accept="application/pdf,.pdf" multiple>
+      <strong>Choose PDF files</strong>
+      <span>Up to 10 files, 4MB each</span>
+    </label>
+
+    <ul id="list" class="list" aria-live="polite"></ul>
+    <p id="empty" class="empty">No files yet. Choose PDFs to get started.</p>
+
+    <div class="actions">
+      <button id="merge" type="button" disabled>Merge PDFs</button>
+      <button id="clear" type="button" class="ghost" disabled>Clear all</button>
+    </div>
+
+    <p id="status" class="status" role="status"></p>
+    <a id="download" class="download" hidden>Download merged PDF</a>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
