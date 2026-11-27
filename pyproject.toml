@@ -6,6 +6,7 @@ line-length = 120
 select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "integration: tests requiring live Postgres, Redis, and S3-compatible services",

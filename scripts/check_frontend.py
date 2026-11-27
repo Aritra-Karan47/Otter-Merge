@@ -49,9 +49,15 @@ class IndexParser(HTMLParser):
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    index_path = os.path.join(root, "templates", "index.html")
-    with open(index_path, "r", encoding="utf-8") as f:
-        html = f.read()
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    from flask import render_template
+
+    import app as otter_app
+
+    with otter_app.app.test_request_context():
+        html = render_template("index.html", upload_ttl=otter_app.UPLOAD_TTL_SECONDS)
 
     parser = IndexParser()
     parser.feed(html)
